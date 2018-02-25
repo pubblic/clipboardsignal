@@ -13,7 +13,7 @@ import (
 	"github.com/akavel/winq"
 )
 
-var signals = make(map[chan<- Update]bool)
+var signals = make(map[chan<- string]bool)
 var mutex sync.Mutex
 
 var wait = make(chan struct{})
@@ -143,12 +143,12 @@ func loop() {
 }
 
 func onUpdate(window uintptr) {
-	text, err := readText(window)
+	text, _ := readText(window)
 	mutex.Lock()
 	defer mutex.Unlock()
 	for sigc := range signals {
 		select {
-		case sigc <- Update{text, err}:
+		case sigc <- text:
 		default:
 		}
 	}
@@ -187,12 +187,7 @@ func readText(window uintptr) (string, error) {
 	return text, nil
 }
 
-type Update struct {
-	Text string
-	Err  error
-}
-
-func Notify(sigc chan<- Update) {
+func Notify(sigc chan<- string) {
 	<-wait
 
 	mutex.Lock()
@@ -200,7 +195,7 @@ func Notify(sigc chan<- Update) {
 	signals[sigc] = true
 }
 
-func Stop(sigc chan<- Update) {
+func Stop(sigc chan<- string) {
 	<-wait
 
 	mutex.Lock()

@@ -11,21 +11,21 @@ import (
 func TestNotify(t *testing.T) {
 	text, err := clipboard.ReadAll()
 	if err != nil {
-		t.FailNow()
+		t.Fatalf("ReadAll fails: %v", err)
 	}
 	defer clipboard.WriteAll(text)
 
-	c := make(chan Update, 1)
+	c := make(chan string, 1)
 	Notify(c)
 	defer Stop(c)
 
 	const clipboardData = "hello hello hello"
 	err = clipboard.WriteAll(clipboardData)
 	if err != nil {
-		t.FailNow()
+		t.Fatalf("WriteAll fails: %v", err)
 	}
 
-	if (<-c).Text != clipboardData {
-		t.FailNow()
+	if <-c != clipboardData {
+		t.Fatal("the actual clipboard data and expected data do not match")
 	}
 }

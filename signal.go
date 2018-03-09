@@ -7,57 +7,40 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
-	"unicode/utf16"
 	"unsafe"
 
 	"github.com/akavel/winq"
 )
 
-var signals = make(map[chan<- string]bool)
-var mutex sync.Mutex
+var sighdr = struct {
+	sigs map[chan<- Notification]bool
+	sync.Mutex
+}{
+	sigs: make(map[chan<- Notification]bool),
+}
 
-var wait = make(chan struct{})
+var initlock sync.Mutex
+var initerr error
+var window uintptr
 
 func init() {
-	winq.Dlls = append(winq.Dlls,
-		syscall.MustLoadDLL("msvcrt.dll"),
-	)
+	// locked for initialization
+	initlock.Lock()
 	go loop()
 }
 
-func malloc(n uintptr) uintptr {
-	m, _ := new(winq.Try).F("malloc", n)
-	if m == 0 {
-		panic("out of memory")
-	}
-	return m
-}
-
-func free(m uintptr) {
-	new(winq.Try).F("free", m)
-}
-
-func newWCHAR(s string) uintptr {
-	const SIZEOF_WCHAR = unsafe.Sizeof(uint16(0))
-	a := utf16.Encode([]rune(s))
-	m := malloc(SIZEOF_WCHAR*uintptr(len(a)) + 1)
-	t := m
-	for _, u := range a {
-		*(*uint16)(unsafe.Pointer(t)) = u
-		t += SIZEOF_WCHAR
-	}
-	*(*uint16)(unsafe.Pointer(t)) = 0
-	return m
-}
-
 type _UINT uint32
+
 type _LONG int32
+
 type _DWORD uint32
+
 type _POINT struct {
 	x _LONG
 	y _LONG
 }
 
+// MSG structure ported for Go
 type _MSG struct {
 	window  uintptr
 	message _UINT
@@ -68,9 +51,6 @@ type _MSG struct {
 }
 
 func loop() {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
 	const (
 		CW_USEDEFAULT      = 0x80000000
 		SW_HIDE            = 0
@@ -79,13 +59,15 @@ func loop() {
 		WM_CLIPBOARDUPDATE = 0x031D
 	)
 
-	className := newWCHAR("Button")
-	windowName := newWCHAR("Void Button")
-	defer free(className)
-	defer free(windowName)
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	// TOOD(pb): other class?
+	className, _ := syscall.UTF16PtrFromString("Button")
+	windowName, _ := syscall.UTF16PtrFromString("Window Button")
 
 	var try winq.Try
-	window := try.N("CreateWindowEx",
+	window = try.N("CreateWindowEx",
 		0,
 		className,
 		windowName,
@@ -100,6 +82,8 @@ func loop() {
 		0,
 	)
 	if try.Err != nil {
+		initerr = try.Err
+		initlock.Unlock()
 		return
 	}
 	defer try.F("DestroyWindow", window)
@@ -108,9 +92,14 @@ func loop() {
 
 	try.N("AddClipboardFormatListener", window)
 	if try.Err != nil {
+		initerr = try.Err
+		// initialzation has finished.
+		initlock.Unlock()
 		return
+	} else {
+		// initialzation has finished.
+		initlock.Unlock()
 	}
-	close(wait)
 	defer try.F("RemoveClipboardFormatListener", window)
 
 	message := new(_MSG)
@@ -118,40 +107,48 @@ func loop() {
 		r, err := try.F("GetMessage",
 			message,
 			window,
-			0,
-			0,
-			// WM_CLIPBOARDUPDATE,
-			// WM_CLIPBOARDUPDATE,
+			0, // WM_CLIPBOARDUPDATE
+			0, // WM_CLIPBOARDUPDATE
 		)
+		// WM_QUIT message is received
 		if r == 0 {
 			log.Print("clipboardsignal: window receives WM_QUIT")
-			// WM_QUIT
-			return
+			break
 		}
-		if int(r) == -1 {
-			log.Print("clipboardsignal: GetMessage returned an error:", err)
-			return
-			// return winq.Error{err, "GetMessage"}
+		// -1
+		if r == 0xFFFF {
+			log.Print("clipboardsignal: ", winq.Error{err, "GetMessage"})
+			break
 		}
 		if message.message == WM_CLIPBOARDUPDATE {
-			onUpdate(window)
+			onClipboardUpdate()
 		}
 
 		try.F("TranslateMessage", message)
 		try.F("DispatchMessage", message)
 	}
+
+	runtime.KeepAlive(className)
+	runtime.KeepAlive(windowName)
 }
 
-func onUpdate(window uintptr) {
-	text, _ := readText(window)
-	mutex.Lock()
-	defer mutex.Unlock()
-	for sigc := range signals {
+type Notification struct {
+	Text string
+	Err  error
+}
+
+func onClipboardUpdate() {
+	var n Notification
+	n.Text, n.Err = readText(window)
+
+	sighdr.Lock()
+	for out := range sighdr.sigs {
 		select {
-		case sigc <- text:
+		case out <- n:
 		default:
 		}
 	}
+	sighdr.Unlock()
 }
 
 func readText(window uintptr) (string, error) {
@@ -187,18 +184,36 @@ func readText(window uintptr) (string, error) {
 	return text, nil
 }
 
-func Notify(sigc chan<- string) {
-	<-wait
-
-	mutex.Lock()
-	defer mutex.Unlock()
-	signals[sigc] = true
+// Notify registers sigc to be notified when clipboard has been changed.
+func Notify(sigc chan<- Notification) {
+	sighdr.Lock()
+	sighdr.sigs[sigc] = true
+	sighdr.Unlock()
 }
 
-func Stop(sigc chan<- string) {
-	<-wait
-
-	mutex.Lock()
-	defer mutex.Unlock()
-	delete(signals, sigc)
+// Stop stops for sigc to be notified.
+func Stop(sigc chan<- Notification) {
+	sighdr.Lock()
+	delete(sighdr.sigs, sigc)
+	sighdr.Unlock()
 }
+
+// Wait waits for initialization to finish.
+func Wait() error {
+	initlock.Lock()
+	err := initerr
+	initlock.Unlock()
+	return err
+}
+
+// TODO(pb): MISSING
+func ReadSlice() ([]byte, error) // return bytes
+
+// TODO(pb): MISSING
+func ReadString() (string, error) // return string
+
+// TODO(pb): MISSING
+func WriteSlice([]byte) error
+
+// TODO(pb): MISSING
+func WriteString(string) error

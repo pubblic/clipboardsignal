@@ -10,7 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/akavel/winq"
-	"github.com/pubblic/utf8"
+	"github.com/pubblic/utf"
 )
 
 const (

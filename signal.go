@@ -32,8 +32,6 @@ var initerr error
 var window uintptr
 
 func init() {
-	// locked for initialization
-	initlock.Lock()
 	go loop()
 }
 
@@ -147,7 +145,7 @@ type Notification struct {
 
 func onClipboardUpdate() {
 	var n Notification
-	n.Text, n.Err = readText(window)
+	n.Text, n.Err = ReadAll()
 
 	sighdr.Lock()
 	for out := range sighdr.sigs {
@@ -161,6 +159,7 @@ func onClipboardUpdate() {
 
 // Notify registers sigc to be notified when clipboard has been changed.
 func Notify(sigc chan<- Notification) {
+	// <-initlock
 	sighdr.Lock()
 	sighdr.sigs[sigc] = true
 	sighdr.Unlock()
@@ -182,11 +181,14 @@ func Wait() error {
 // ReadAll reads the content of the clipboard. Compatible with github.com/atotto/clipboard.
 func ReadAll() (string, error) {
 	<-initlock
+	if initerr != nil {
+		return "", initerr
+	}
 
 	var try winq.Try
 	try.N("OpenClipboard", window)
 	if try.Err != nil {
-		return nil, try.Err
+		return "", try.Err
 	}
 	defer try.F("CloseClipboard")
 
@@ -220,6 +222,9 @@ func ReadAll() (string, error) {
 // WriteAll writes s into the clipboard. Compatible with github.com/atotto/clipboard.
 func WriteAll(s string) error {
 	<-initlock
+	if initerr != nil {
+		return initerr
+	}
 
 	var try winq.Try
 	try.N("OpenClipboard", window)
@@ -227,6 +232,11 @@ func WriteAll(s string) error {
 		return try.Err
 	}
 	defer try.F("CloseClipboard")
+
+	try.N("EmptyClipboard")
+	if try.Err != nil {
+		return try.Err
+	}
 
 	n := utf.UTF16CountInString(s)
 	n++ // terminating NULL
@@ -256,6 +266,9 @@ func WriteAll(s string) error {
 
 func Write(p []byte) error {
 	<-initlock
+	if initerr != nil {
+		return initerr
+	}
 
 	var try winq.Try
 	try.N("OpenClipboard", window)

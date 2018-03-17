@@ -5,8 +5,6 @@ package clipboardsignal
 import (
 	"testing"
 	"time"
-
-	"github.com/atotto/clipboard"
 )
 
 func TestNotifyStop(t *testing.T) {
@@ -15,18 +13,18 @@ func TestNotifyStop(t *testing.T) {
 }
 
 func testNotify(t *testing.T) {
-	text, err := clipboard.ReadAll()
+	text, err := ReadAll()
 	if err != nil {
 		t.Fatalf("ReadAll fails: %v", err)
 	}
-	defer clipboard.WriteAll(text)
+	defer WriteAll(text)
 
 	c := make(chan Notification, 1)
 	Notify(c)
 	defer Stop(c)
 
-	const clipboardData = "hello hello hello"
-	err = clipboard.WriteAll(clipboardData)
+	const clipboardData = "hello hello hello 가나다라마 かけきこく"
+	err = WriteAll(clipboardData)
 	if err != nil {
 		t.Fatalf("WriteAll fails: %v", err)
 	}
@@ -41,11 +39,11 @@ func testNotify(t *testing.T) {
 }
 
 func testStop(t *testing.T) {
-	text, err := clipboard.ReadAll()
+	text, err := ReadAll()
 	if err != nil {
 		t.Fatalf("ReadAll fails: %v", err)
 	}
-	defer clipboard.WriteAll(text)
+	defer WriteAll(text)
 
 	c := make(chan Notification, 1)
 
@@ -56,7 +54,7 @@ func testStop(t *testing.T) {
 	Stop(c)
 
 	// change the content of clipboard
-	err = clipboard.WriteAll("blah bula boola")
+	err = WriteAll("blah bula boola")
 	if err != nil {
 		t.Fatalf("WriteAll fails: %v", err)
 	}

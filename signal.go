@@ -27,6 +27,8 @@ var sighdr = struct {
 	sigs: make(map[chan<- Notification]bool),
 }
 
+var uselock sync.Mutex
+
 var initlock = make(chan struct{})
 var initerr error
 var window uintptr
@@ -185,6 +187,9 @@ func ReadAll() (string, error) {
 		return "", initerr
 	}
 
+	uselock.Lock()
+	defer uselock.Unlock()
+
 	runtime.LockOSThread()
 	defer runtime.LockOSThread()
 
@@ -228,6 +233,10 @@ func WriteAll(s string) error {
 	if initerr != nil {
 		return initerr
 	}
+
+	// issue(pb): CloseClipboard affects all threads.
+	uselock.Lock()
+	defer uselock.Unlock()
 
 	// issue(pb): functions operating on a open clipboard may be
 	// executed on a different thread. this is an error.
@@ -280,6 +289,9 @@ func Write(p []byte) error {
 	if initerr != nil {
 		return initerr
 	}
+
+	uselock.Lock()
+	defer uselock.Unlock()
 
 	runtime.LockOSThread()
 	defer runtime.LockOSThread()

@@ -185,6 +185,9 @@ func ReadAll() (string, error) {
 		return "", initerr
 	}
 
+	runtime.LockOSThread()
+	defer runtime.LockOSThread()
+
 	var try winq.Try
 	try.N("OpenClipboard", window)
 	if try.Err != nil {
@@ -225,6 +228,14 @@ func WriteAll(s string) error {
 	if initerr != nil {
 		return initerr
 	}
+
+	// issue(pb): functions operating on a open clipboard may be
+	// executed on a different thread. this is an error.
+	//
+	// ERROR_CLIPBOARD_NOT_OPEN (0x58A)
+	// https://msdn.microsoft.com/en-us/library/ms838437.aspx
+	runtime.LockOSThread()
+	defer runtime.LockOSThread()
 
 	var try winq.Try
 	try.N("OpenClipboard", window)
@@ -269,6 +280,9 @@ func Write(p []byte) error {
 	if initerr != nil {
 		return initerr
 	}
+
+	runtime.LockOSThread()
+	defer runtime.LockOSThread()
 
 	var try winq.Try
 	try.N("OpenClipboard", window)

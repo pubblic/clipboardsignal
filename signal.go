@@ -10,6 +10,14 @@ import (
 	"unsafe"
 
 	"github.com/akavel/winq"
+	"github.com/pubblic/utf8"
+)
+
+const (
+	_CF_UNICODETEXT = 13
+	_GMEM_FIXED     = 0x0000
+	_SIZE_UINT16    = unsafe.Sizeof(uint16(0))
+	_MAX_SIZE       = 0x80000000
 )
 
 var sighdr = struct {
@@ -19,7 +27,7 @@ var sighdr = struct {
 	sigs: make(map[chan<- Notification]bool),
 }
 
-var initlock sync.Mutex
+var initlock = make(chan struct{})
 var initerr error
 var window uintptr
 
@@ -83,7 +91,7 @@ func loop() {
 	)
 	if try.Err != nil {
 		initerr = try.Err
-		initlock.Unlock()
+		close(initlock)
 		return
 	}
 	defer try.F("DestroyWindow", window)
@@ -94,11 +102,11 @@ func loop() {
 	if try.Err != nil {
 		initerr = try.Err
 		// initialzation has finished.
-		initlock.Unlock()
+		close(initlock)
 		return
 	} else {
 		// initialzation has finished.
-		initlock.Unlock()
+		close(initlock)
 	}
 	defer try.F("RemoveClipboardFormatListener", window)
 
@@ -151,39 +159,6 @@ func onClipboardUpdate() {
 	sighdr.Unlock()
 }
 
-func readText(window uintptr) (string, error) {
-	const (
-		CF_UNICODETEXT = 13
-		GMEM_FIXED     = 0x0000
-	)
-
-	var try winq.Try
-	try.N("OpenClipboard", window)
-	if try.Err != nil {
-		return "", try.Err
-	}
-	defer try.F("CloseClipboard")
-
-	h := try.N("GetClipboardData", CF_UNICODETEXT)
-	if try.Err != nil {
-		return "", try.Err
-	}
-
-	m := try.N("GlobalLock", h)
-	if try.Err != nil {
-		return "", try.Err
-	}
-
-	text := syscall.UTF16ToString((*[1 << 31]uint16)(unsafe.Pointer(m))[:])
-
-	try.N("GlobalUnlock", h)
-	if try.Err != nil {
-		return "", try.Err
-	}
-
-	return text, nil
-}
-
 // Notify registers sigc to be notified when clipboard has been changed.
 func Notify(sigc chan<- Notification) {
 	sighdr.Lock()
@@ -200,20 +175,117 @@ func Stop(sigc chan<- Notification) {
 
 // Wait waits for initialization to finish.
 func Wait() error {
-	initlock.Lock()
-	err := initerr
-	initlock.Unlock()
-	return err
+	<-initlock
+	return initerr
 }
 
-// TODO(pb): MISSING
-func ReadSlice() ([]byte, error) // return bytes
+// ReadAll reads the content of the clipboard. Compatible with github.com/atotto/clipboard.
+func ReadAll() (string, error) {
+	<-initlock
 
-// TODO(pb): MISSING
-func ReadString() (string, error) // return string
+	var try winq.Try
+	try.N("OpenClipboard", window)
+	if try.Err != nil {
+		return nil, try.Err
+	}
+	defer try.F("CloseClipboard")
 
-// TODO(pb): MISSING
-func WriteSlice([]byte) error
+	h := try.N("GetClipboardData", _CF_UNICODETEXT)
+	if try.Err != nil {
+		return "", try.Err
+	}
 
-// TODO(pb): MISSING
-func WriteString(string) error
+	m := try.N("GlobalLock", h)
+	if try.Err != nil {
+		return "", try.Err
+	}
+
+	u := (*[_MAX_SIZE]uint16)(unsafe.Pointer(m))[:]
+	for i, r := range u {
+		if r == 0 {
+			u = u[:i]
+			break
+		}
+	}
+	s := utf.UTF8DecodeToString(u)
+
+	try.N("GlobalUnlock", h)
+	if try.Err != nil {
+		return "", try.Err
+	}
+
+	return s, nil
+}
+
+// WriteAll writes s into the clipboard. Compatible with github.com/atotto/clipboard.
+func WriteAll(s string) error {
+	<-initlock
+
+	var try winq.Try
+	try.N("OpenClipboard", window)
+	if try.Err != nil {
+		return try.Err
+	}
+	defer try.F("CloseClipboard")
+
+	n := utf.UTF16CountInString(s)
+	n++ // terminating NULL
+
+	h := try.N("GlobalAlloc", _GMEM_FIXED, uintptr(n)*_SIZE_UINT16)
+	if try.Err != nil {
+		return try.Err
+	}
+
+	l := try.N("GlobalLock", h)
+	if try.Err != nil {
+		return try.Err
+	}
+
+	dst := (*[_MAX_SIZE]uint16)(unsafe.Pointer(l))[:n]
+	utf.UTF16EncodeString(dst, s)
+	dst[n-1] = 0
+
+	try.N("GlobalUnlock", h)
+	if try.Err != nil {
+		return try.Err
+	}
+
+	try.N("SetClipboardData", _CF_UNICODETEXT, h)
+	return try.Err
+}
+
+func Write(p []byte) error {
+	<-initlock
+
+	var try winq.Try
+	try.N("OpenClipboard", window)
+	if try.Err != nil {
+		return try.Err
+	}
+	defer try.F("CloseClipboard")
+
+	n := utf.UTF16Count(p)
+	n++ // terminating NULL
+
+	h := try.N("GlobalAlloc", _GMEM_FIXED, uintptr(n)*_SIZE_UINT16)
+	if try.Err != nil {
+		return try.Err
+	}
+
+	l := try.N("GlobalLock", h)
+	if try.Err != nil {
+		return try.Err
+	}
+
+	dst := (*[_MAX_SIZE]uint16)(unsafe.Pointer(l))[:n]
+	utf.UTF16Encode(dst, p)
+	dst[n-1] = 0
+
+	try.N("GlobalUnlock", h)
+	if try.Err != nil {
+		return try.Err
+	}
+
+	try.N("SetClipboardData", _CF_UNICODETEXT, h)
+	return try.Err
+}
